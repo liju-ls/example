@@ -1,0 +1,44 @@
+function hasVisibleContent(node) {
+  // If text node with non-whitespace text
+  if (node.nodeType === Node.TEXT_NODE && node.textContent.trim().length > 0) {
+    return true;
+  }
+
+  // If element is visible and not display: none
+  if (
+    node.nodeType === Node.ELEMENT_NODE &&
+    getComputedStyle(node).display !== 'none'
+  ) {
+    // If element has visible text
+    if (node.textContent.trim().length > 0) {
+      return true;
+    }
+
+    // Or if any of its children have visible content
+    for (let child of node.childNodes) {
+      if (hasVisibleContent(child)) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+function hideEmptyParents(node) {
+  if (!node || !node.children) return;
+
+  for (let child of Array.from(node.children)) {
+    hideEmptyParents(child);
+  }
+
+  const allChildrenHidden = Array.from(node.children).every(
+    (child) => child.style.display === 'none'
+  );
+
+  const hasContent = hasVisibleContent(node);
+
+  if (allChildrenHidden && !hasContent) {
+    node.style.display = 'none';
+  }
+}
