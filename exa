@@ -1,44 +1,383 @@
-function hasVisibleContent(node) {
-  // If text node with non-whitespace text
-  if (node.nodeType === Node.TEXT_NODE && node.textContent.trim().length > 0) {
-    return true;
-  }
+import React, {
+  forwardRef,
+  Fragment,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+} from 'react';
+import html2canvas from 'html2canvas';
+import { PDFDocument } from 'pdf-lib';
+import { domToReact } from 'html-react-parser';
 
-  // If element is visible and not display: none
-  if (
-    node.nodeType === Node.ELEMENT_NODE &&
-    getComputedStyle(node).display !== 'none'
-  ) {
-    // If element has visible text
-    if (node.textContent.trim().length > 0) {
-      return true;
-    }
-
-    // Or if any of its children have visible content
-    for (let child of node.childNodes) {
-      if (hasVisibleContent(child)) {
-        return true;
-      }
-    }
-  }
-
-  return false;
-}
-
-function hideEmptyParents(node) {
-  if (!node || !node.children) return;
-
-  for (let child of Array.from(node.children)) {
-    hideEmptyParents(child);
-  }
-
-  const allChildrenHidden = Array.from(node.children).every(
-    (child) => child.style.display === 'none'
+const BlockCreator = ({ element }) => {
+  const Tag = element.nodeName.toLowerCase();
+  return (
+    <Tag
+      className={element.className}
+      dangerouslySetInnerHTML={{ __html: element.innerHTML }}
+    />
   );
+};
 
-  const hasContent = hasVisibleContent(node);
+const A4Page = ({ children, Header, Footer }) => (
+  <div
+    className={`page h-[297mm] w-[210mm] flex flex-col justify-between shadow-md border`}
+    style={{ borderColor: '#E8E8E8' }}
+  >
+    <Header />
+    <div className='flex-1'>{children}</div>
+    <Footer />
+  </div>
+);
 
-  if (allChildrenHidden && !hasContent) {
-    node.style.display = 'none';
+const PDFPreview = forwardRef(
+  ({ pdfRef, HeaderSection, FooterSection, version }, ref) => {
+    const headerRef = useRef(null);
+    const footerRef = useRef(null);
+    const targetRef = useRef(null);
+    const [isR, setIsR] = useState(true);
+
+    const A4_HEIGHT = 1122;
+    const [pages, setPages] = useState([]);
+    const [nod, setNod] = useState([]);
+
+    const downloadPdfContent = async () => {
+      if (!targetRef.current) return;
+
+      try {
+        const canvas = await html2canvas(targetRef.current, {
+          useCORS: true,
+          scale: 2,
+          onclone: (el) => {
+            document.querySelectorAll('.page').forEach((el) => {
+              el.removeAttribute('border');
+              el.classList.remove('border-gray-200');
+            });
+          },
+        });
+
+        const fullWidth = canvas.width;
+        const fullHeight = canvas.height;
+
+        const A4_WIDTH_PT = 595.28;
+        const A4_HEIGHT_PT = 841.89;
+
+        const scale = A4_WIDTH_PT / fullWidth;
+        const sliceHeight = A4_HEIGHT_PT / scale;
+
+        const totalPages = Math.ceil(fullHeight / sliceHeight);
+
+        const pdfDoc = await PDFDocument.create();
+
+        for (let pageNum = 0; pageNum < totalPages; pageNum++) {
+          const offset = pageNum * sliceHeight;
+          const currentSliceHeight = Math.min(sliceHeight, fullHeight - offset);
+
+          if (
+            currentSliceHeight <= 0 ||
+            (pageNum === totalPages - 1 &&
+              currentSliceHeight < sliceHeight &&
+              fullHeight % sliceHeight < sliceHeight * 0.1)
+          ) {
+            continue;
+          }
+
+          const sliceCanvas = document.createElement('canvas');
+          sliceCanvas.width = fullWidth;
+          sliceCanvas.height = currentSliceHeight;
+
+          const ctx = sliceCanvas.getContext('2d');
+          ctx.drawImage(
+            canvas,
+            0,
+            offset,
+            fullWidth,
+            currentSliceHeight,
+            0,
+            0,
+            fullWidth,
+            currentSliceHeight
+          );
+
+          const imgData = sliceCanvas.toDataURL('image/png');
+          setNod((prev) => [...prev, imgData]);
+          const imgBytes = await fetch(imgData).then((res) =>
+            res.arrayBuffer()
+          );
+          const image = await pdfDoc.embedPng(imgBytes);
+          const scaled = image.scale(scale);
+
+          const page = pdfDoc.addPage([A4_WIDTH_PT, A4_HEIGHT_PT]);
+          page.drawImage(image, {
+            x: 0,
+            y: A4_HEIGHT_PT - scaled.height,
+            width: scaled.width,
+            height: scaled.height,
+          });
+        }
+
+        if (pdfDoc.getPageCount() === 0) return;
+
+        const pdfBytes = await pdfDoc.save();
+        const blob = new Blob([pdfBytes], { type: 'application/pdf' });
+
+        targetRef.current.style.display = 'none';
+
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.download = 'multipage.pdf';
+        link.click();
+      } catch (err) {
+        console.log(err);
+      }
+    };
+
+    useEffect(() => {
+      if (!pdfRef.current || !headerRef.current || !footerRef.current) return;
+
+      const A4_HEIGHT = 1122; // px at 96dpi (11.69in × 96)
+
+      const container = document.createElement('div');
+      container.style.position = 'absolute';
+      container.style.visibility = 'hidden';
+      container.style.width = '210mm'; // A4 width
+      container.style.padding = '24px';
+      container.style.boxSizing = 'border-box';
+      container.style.top = '0';
+      container.style.left = '0';
+      document.body.appendChild(container);
+
+      const headerHeight = headerRef.current.getBoundingClientRect().height;
+      const footerHeight = footerRef.current.getBoundingClientRect().height;
+      const headerStyles = getComputedStyle(headerRef.current);
+      const footerStyles = getComputedStyle(footerRef.current);
+
+      const AVAILABLE_HEIGHT =
+        A4_HEIGHT -
+        (headerHeight +
+          parseFloat(headerStyles.marginTop || '0') +
+          parseFloat(headerStyles.marginBottom || '0')) -
+        (footerHeight +
+          parseFloat(footerStyles.marginTop || '0') +
+          parseFloat(footerStyles.marginBottom || '0'));
+
+      const pdfElements = Array.from(pdfRef.current.children);
+      const fragments = [];
+      let currentPage = [];
+      let currentHeight = 0;
+
+      function measureHeight(el) {
+        container.appendChild(el);
+        const elStyles = getComputedStyle(el);
+        const height =
+          el.getBoundingClientRect().height +
+          parseFloat(elStyles.marginBottom) +
+          parseFloat(elStyles.marginTop);
+        container.removeChild(el);
+        return height;
+      }
+
+      function cloneWithHidden(el, hiddenIndices = []) {
+        const clone = el.cloneNode(true);
+        const leafNodes = Array.from(clone.querySelectorAll('*')).filter(
+          (e) => e.children.length === 0
+        );
+
+        // Hide specified leaf nodes
+        hiddenIndices.forEach((i) => {
+          if (leafNodes[i]) leafNodes[i].style.display = 'none';
+        });
+
+        // Recursively hide parents if all their children are hidden
+        function hideEmptyParents(node) {
+          if (!node || !node.children) return;
+
+          Array.from(node.children).forEach(hideEmptyParents);
+
+          const allChildrenHidden = Array.from(node.children).every(
+            (child) => child.style.display === 'none'
+          );
+          const hasVisibleText = Array.from(node.childNodes).some((child) => {
+            if (
+              child.nodeType === Node.TEXT_NODE &&
+              child.textContent.trim().length > 0
+            ) {
+              return child.parentNode.style.display !== 'none';
+            }
+            return false;
+          });
+
+          if (allChildrenHidden && !hasVisibleText) {
+            node.style.display = 'none';
+          }
+        }
+
+        function hasContent(node) {
+          if (node.nodeType === Node.TEXT_NODE) {
+            return (
+              node.textContent.trim().length > 0 &&
+              node.parentNode.style.display !== 'none'
+            );
+          }
+
+          if (node.nodeType !== Node.ELEMENT_NODE) return false;
+
+          if (node.style.display === 'none') return false;
+
+          return Array.from(node.childNodes).some(hasContent);
+        }
+
+        hideEmptyParents(clone);
+
+        return clone;
+      }
+
+      function splitElement(element, maxHeight) {
+        const topClone = element.cloneNode(true);
+        container.appendChild(topClone);
+
+        const leaves = Array.from(topClone.querySelectorAll('*')).filter(
+          (e) => e.children.length === 0
+        );
+
+        container.removeChild(topClone);
+
+        let hiddenTop = [];
+        let cloneTop = null;
+
+        for (let i = leaves.length - 1; i >= 0; i--) {
+          const temp = cloneWithHidden(element, hiddenTop);
+          const tempHeight = measureHeight(temp);
+          if (tempHeight <= maxHeight) {
+            cloneTop = temp;
+            break;
+          }
+          hiddenTop.push(i);
+        }
+
+        // Remaining (bottom)
+        const hiddenBottom = Array.from(
+          { length: leaves.length - hiddenTop.length },
+          (_, i) => i
+        );
+        const cloneBottom = cloneWithHidden(element, hiddenBottom);
+
+        return {
+          top: cloneTop,
+          bottom: cloneBottom,
+        };
+      }
+
+      for (let i = 0; i < pdfElements.length; i++) {
+        const el = pdfElements[i];
+        const clone = el.cloneNode(true);
+        const height = measureHeight(clone);
+
+        if (height > AVAILABLE_HEIGHT) {
+          // Split the element
+          const { top, bottom } = splitElement(
+            el,
+            AVAILABLE_HEIGHT - currentHeight
+          );
+
+          if (top) {
+            fragments.push([...currentPage, top]);
+            currentPage = [];
+            currentHeight = 0;
+          }
+
+          const bottomHeight = measureHeight(bottom);
+
+          if (bottomHeight > AVAILABLE_HEIGHT) {
+            // If bottom still too big, recursively break it in next iterations
+            pdfElements.splice(i + 1, 0, bottom);
+          } else {
+            currentPage.push(bottom);
+            currentHeight += bottomHeight;
+          }
+        } else {
+          if (currentHeight + height > AVAILABLE_HEIGHT) {
+            // Case: element needs splitting to fit in remaining space on current page
+            const availableSpace = AVAILABLE_HEIGHT - currentHeight;
+
+            if (height > availableSpace) {
+              // Split the element to fit as much as we can into remaining space
+              const { top, bottom } = splitElement(el, availableSpace);
+
+              if (top) {
+                currentPage.push(top);
+                fragments.push([...currentPage]);
+              } else if (currentPage.length > 0) {
+                // nothing could fit in current page
+                fragments.push([...currentPage]);
+              }
+
+              currentPage = [];
+
+              const bottomHeight = measureHeight(bottom);
+              if (bottomHeight > AVAILABLE_HEIGHT) {
+                // too big again, recursively split later
+                pdfElements.splice(i + 1, 0, bottom);
+              } else {
+                currentPage = [bottom];
+                currentHeight = bottomHeight;
+              }
+            } else {
+              // Element fits on a fresh page, so just flush and start new
+              if (currentPage.length > 0) {
+                fragments.push([...currentPage]);
+              }
+
+              currentPage = [el];
+              currentHeight = height;
+            }
+          } else {
+            currentPage.push(el);
+            currentHeight += height;
+          }
+        }
+      }
+
+      if (currentPage.length > 0) {
+        fragments.push([...currentPage]);
+      }
+
+      setPages(fragments);
+      document.body.removeChild(container);
+    }, [pdfRef, headerRef, footerRef, version]);
+
+    useImperativeHandle(ref, () => ({
+      downloadPdf: downloadPdfContent,
+    }));
+
+    return (
+      <>
+        {isR && (
+          <div className=''>
+            <HeaderSection headerRef={headerRef} />
+            <FooterSection footerRef={footerRef} />
+          </div>
+        )}
+
+        <div
+          ref={targetRef}
+          key={version}
+        >
+          {pages?.map((page) => (
+            <A4Page
+              Header={HeaderSection}
+              Footer={FooterSection}
+            >
+              {page?.map((item) => (
+                <BlockCreator element={item} />
+              ))}
+            </A4Page>
+          ))}
+        </div>
+      </>
+    );
   }
-}
+);
+
+export default PDFPreview;
